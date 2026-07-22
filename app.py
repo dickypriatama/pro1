@@ -264,7 +264,14 @@ st.caption(
 # Tabel realisasi per bulan per jenis belanja (aktual vs proyeksi)
 # --------------------------------------------------------------------------
 
-st.markdown("**Realisasi per Bulan per Jenis Belanja**")
+st.markdown("**Pagu & Realisasi per Bulan per Jenis Belanja**")
+
+TOTAL_COL = "TOTAL (Realisasi+Proyeksi)"
+
+pagu_per_jenis = (
+    df_satker.groupby("LABEL_JENIS_BELANJA")["PAGU"].sum()
+    .reindex(jenis_belanja["LABEL_JENIS_BELANJA"])
+)
 
 tabel = df_satker.groupby("LABEL_JENIS_BELANJA")[BULAN_KOLOM].sum().astype(float)
 tabel = tabel.reindex(jenis_belanja["LABEL_JENIS_BELANJA"])  # urutkan dari realisasi terbesar
@@ -281,11 +288,19 @@ if bulan_terakhir < 12:
 tabel.loc["Total"] = tabel.sum()
 mask_proyeksi.loc["Total"] = mask_proyeksi.iloc[0] if len(mask_proyeksi) else False
 
+# Kolom PAGU (disisipkan sebelum kolom bulanan) dan kolom TOTAL (realisasi+proyeksi) di akhir
+tabel.insert(0, "PAGU", pd.concat([pagu_per_jenis, pd.Series({"Total": pagu_total})]))
+tabel[TOTAL_COL] = tabel[BULAN_KOLOM].sum(axis=1)
+
+# Mask lengkap (PAGU & TOTAL_COL tidak pernah ditandai sebagai proyeksi)
+mask_lengkap = pd.DataFrame(False, index=tabel.index, columns=tabel.columns)
+mask_lengkap[BULAN_KOLOM] = mask_proyeksi[BULAN_KOLOM]
+
 
 def _highlight_proyeksi(_):
     return pd.DataFrame(
-        np.where(mask_proyeksi, "background-color: #fff3cd; color: #7a5b00;", ""),
-        index=mask_proyeksi.index, columns=mask_proyeksi.columns,
+        np.where(mask_lengkap, "background-color: #fff3cd; color: #7a5b00;", ""),
+        index=mask_lengkap.index, columns=mask_lengkap.columns,
     )
 
 
@@ -297,7 +312,8 @@ styled_tabel = (
 st.dataframe(styled_tabel, use_container_width=True)
 st.caption(
     "🟨 Sel berwarna kuning = angka proyeksi (belum realisasi aktual), dihitung dari rata-rata "
-    "realisasi per jenis belanja pada bulan-bulan yang sudah berjalan."
+    "realisasi per jenis belanja pada bulan-bulan yang sudah berjalan. Kolom PAGU dan kolom "
+    f"\"{TOTAL_COL}\" tidak ditandai kuning karena berupa gabungan/acuan, bukan proyeksi murni."
 )
 
 st.divider()
