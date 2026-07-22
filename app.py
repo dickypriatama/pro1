@@ -75,6 +75,12 @@ def load_data() -> pd.DataFrame:
 
 df = load_data()
 
+# Kolom REALISASI & SISA PAGU dihitung ulang dari total kolom bulanan (JAN..DES).
+# Ini supaya semua angka di dashboard konsisten dengan rincian bulanannya -- pada sebagian
+# data sumber, kolom REALISASI bawaan bisa tidak sinkron dengan rincian JAN..DES-nya.
+df["REALISASI"] = df[BULAN_KOLOM].sum(axis=1)
+df["SISA PAGU"] = df["PAGU"] - df["REALISASI"]
+
 
 # --------------------------------------------------------------------------
 # Sidebar - filter
@@ -165,15 +171,41 @@ jenis_belanja = (
 st.title("📊 Dashboard Pagu & Realisasi Satker")
 st.caption(f"{nmdept} — {nmsatker} — Tahun {tahun}")
 
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Pagu", f"Rp {pagu_total:,.0f}")
-k2.metric("Realisasi", f"Rp {realisasi_total:,.0f}", f"{persen_serapan:.1f}% dari pagu")
-k3.metric("Sisa Pagu", f"Rp {sisa_pagu:,.0f}")
-k4.metric(
-    "Proyeksi Realisasi Akhir Tahun",
-    f"Rp {proyeksi_akhir_tahun:,.0f}",
-    f"{persen_proyeksi:.1f}% dari pagu",
-)
+
+def kpi_card(label: str, value: str, delta: str = None):
+    delta_html = (
+        f'<div style="font-size:0.85rem;color:#16a34a;margin-top:4px;">{delta}</div>'
+        if delta else ""
+    )
+    st.markdown(
+        f"""
+        <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;
+                    padding:16px 18px;min-height:110px;">
+            <div style="font-size:0.85rem;color:#64748b;margin-bottom:6px;">{label}</div>
+            <div style="font-size:clamp(1rem, 2.1vw, 1.6rem);font-weight:700;color:#0f172a;
+                        white-space:normal;overflow-wrap:break-word;line-height:1.25;">{value}</div>
+            {delta_html}
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+r1c1, r1c2 = st.columns(2)
+r2c1, r2c2 = st.columns(2)
+
+with r1c1:
+    kpi_card("Pagu", f"Rp {pagu_total:,.0f}")
+with r1c2:
+    kpi_card("Realisasi", f"Rp {realisasi_total:,.0f}", f"{persen_serapan:.1f}% dari pagu")
+with r2c1:
+    kpi_card("Sisa Pagu", f"Rp {sisa_pagu:,.0f}")
+with r2c2:
+    kpi_card(
+        "Proyeksi Realisasi Akhir Tahun",
+        f"Rp {proyeksi_akhir_tahun:,.0f}",
+        f"{persen_proyeksi:.1f}% dari pagu",
+    )
 
 st.divider()
 
@@ -245,7 +277,10 @@ for b in bulan_angka:
         proyeksi.append(rerata_bulanan)
 
 fig_trend = go.Figure()
-fig_trend.add_trace(go.Bar(x=BULAN_KOLOM, y=aktual, name="Realisasi per Bulan (Aktual)"))
+fig_trend.add_trace(go.Scatter(
+    x=BULAN_KOLOM, y=aktual, mode="lines+markers",
+    name="Realisasi per Bulan (Aktual)", line=dict(width=3),
+))
 fig_trend.add_trace(go.Scatter(
     x=BULAN_KOLOM, y=proyeksi, mode="lines+markers",
     name="Proyeksi (rata-rata bulanan)", line=dict(dash="dash"),
@@ -268,13 +303,22 @@ st.markdown("**Pagu & Realisasi per Bulan per Jenis Belanja**")
 
 TOTAL_COL = "TOTAL (Realisasi+Proyeksi)"
 
+# Urutan baris tabel mengikuti kode jenis belanja (51 Pegawai, 52 Barang, 53 Modal, dst),
+# bukan diurutkan berdasarkan besar realisasi seperti pie chart.
+urutan_kode = (
+    df_satker[["JENIS BELANJA", "LABEL_JENIS_BELANJA"]]
+    .drop_duplicates()
+    .sort_values("JENIS BELANJA")["LABEL_JENIS_BELANJA"]
+    .tolist()
+)
+
 pagu_per_jenis = (
     df_satker.groupby("LABEL_JENIS_BELANJA")["PAGU"].sum()
-    .reindex(jenis_belanja["LABEL_JENIS_BELANJA"])
+    .reindex(urutan_kode)
 )
 
 tabel = df_satker.groupby("LABEL_JENIS_BELANJA")[BULAN_KOLOM].sum().astype(float)
-tabel = tabel.reindex(jenis_belanja["LABEL_JENIS_BELANJA"])  # urutkan dari realisasi terbesar
+tabel = tabel.reindex(urutan_kode)  # urutkan sesuai kode jenis belanja
 
 mask_proyeksi = pd.DataFrame(False, index=tabel.index, columns=BULAN_KOLOM)
 if bulan_terakhir < 12:
