@@ -8,6 +8,7 @@ Streamlit + Groq (narasi & chat AI). Supabase opsional untuk sumber data terpusa
 import os
 from datetime import date
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -228,24 +229,75 @@ with p2:
 st.subheader("Tren & Proyeksi Realisasi hingga Akhir Tahun")
 
 bulan_angka = list(range(1, 13))
-aktual = [kumulatif.iloc[b - 1] if b <= bulan_terakhir else None for b in bulan_angka]
-proyeksi = [
-    None if b < bulan_terakhir else
-    (kumulatif.iloc[bulan_terakhir - 1] + rerata_bulanan * (b - bulan_terakhir) if bulan_terakhir else None)
-    for b in bulan_angka
-]
+
+# Grafik non-kumulatif: nilai realisasi per bulan (biar kelihatan naik-turunnya),
+# bulan setelah bulan_terakhir ditampilkan sebagai proyeksi rata-rata (garis putus-putus)
+aktual = [monthly.values[b - 1] if b <= bulan_terakhir else None for b in bulan_angka]
+proyeksi = []
+for b in bulan_angka:
+    if bulan_terakhir == 0:
+        proyeksi.append(None)
+    elif b < bulan_terakhir:
+        proyeksi.append(None)
+    elif b == bulan_terakhir:
+        proyeksi.append(monthly.values[b - 1])  # titik sambung dengan garis aktual
+    else:
+        proyeksi.append(rerata_bulanan)
 
 fig_trend = go.Figure()
-fig_trend.add_trace(go.Scatter(x=BULAN_KOLOM, y=aktual, mode="lines+markers", name="Realisasi Kumulatif (Aktual)"))
-fig_trend.add_trace(go.Scatter(x=BULAN_KOLOM, y=proyeksi, mode="lines+markers", name="Proyeksi", line=dict(dash="dash")))
-fig_trend.add_hline(y=pagu_total, line_dash="dot", annotation_text="Pagu", line_color="gray")
-fig_trend.update_layout(yaxis_title="Rupiah (kumulatif)", xaxis_title=None)
+fig_trend.add_trace(go.Bar(x=BULAN_KOLOM, y=aktual, name="Realisasi per Bulan (Aktual)"))
+fig_trend.add_trace(go.Scatter(
+    x=BULAN_KOLOM, y=proyeksi, mode="lines+markers",
+    name="Proyeksi (rata-rata bulanan)", line=dict(dash="dash"),
+))
+fig_trend.update_layout(yaxis_title="Rupiah (per bulan)", xaxis_title=None)
 st.plotly_chart(fig_trend, use_container_width=True)
 
 st.caption(
-    "Metode proyeksi: rata-rata realisasi per bulan berjalan (sampai bulan "
-    f"{BULAN_LABEL.get(bulan_terakhir, '-')}) dikalikan 12 bulan. Ini estimasi sederhana, "
-    "bukan angka resmi."
+    "Grafik ini menampilkan realisasi tiap bulan (bukan kumulatif) supaya terlihat bulan mana "
+    "yang realisasinya naik/turun. Bulan setelah "
+    f"{BULAN_LABEL.get(bulan_terakhir, '-')} adalah proyeksi memakai rata-rata realisasi bulan "
+    "berjalan — estimasi sederhana, bukan angka resmi."
+)
+
+# --------------------------------------------------------------------------
+# Tabel realisasi per bulan per jenis belanja (aktual vs proyeksi)
+# --------------------------------------------------------------------------
+
+st.markdown("**Realisasi per Bulan per Jenis Belanja**")
+
+tabel = df_satker.groupby("LABEL_JENIS_BELANJA")[BULAN_KOLOM].sum().astype(float)
+tabel = tabel.reindex(jenis_belanja["LABEL_JENIS_BELANJA"])  # urutkan dari realisasi terbesar
+
+mask_proyeksi = pd.DataFrame(False, index=tabel.index, columns=BULAN_KOLOM)
+if bulan_terakhir < 12:
+    for jb in tabel.index:
+        actual_sum = tabel.loc[jb, BULAN_KOLOM[:bulan_terakhir]].sum() if bulan_terakhir else 0
+        rerata_jb = actual_sum / bulan_terakhir if bulan_terakhir else 0
+        for m in range(bulan_terakhir, 12):
+            tabel.loc[jb, BULAN_KOLOM[m]] = rerata_jb
+    mask_proyeksi.loc[:, BULAN_KOLOM[bulan_terakhir:]] = True
+
+tabel.loc["Total"] = tabel.sum()
+mask_proyeksi.loc["Total"] = mask_proyeksi.iloc[0] if len(mask_proyeksi) else False
+
+
+def _highlight_proyeksi(_):
+    return pd.DataFrame(
+        np.where(mask_proyeksi, "background-color: #fff3cd; color: #7a5b00;", ""),
+        index=mask_proyeksi.index, columns=mask_proyeksi.columns,
+    )
+
+
+styled_tabel = (
+    tabel.style
+    .apply(_highlight_proyeksi, axis=None)
+    .format("Rp {:,.0f}")
+)
+st.dataframe(styled_tabel, use_container_width=True)
+st.caption(
+    "🟨 Sel berwarna kuning = angka proyeksi (belum realisasi aktual), dihitung dari rata-rata "
+    "realisasi per jenis belanja pada bulan-bulan yang sudah berjalan."
 )
 
 st.divider()
