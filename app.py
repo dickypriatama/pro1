@@ -86,16 +86,25 @@ tahun = st.sidebar.selectbox("Tahun", tahun_list)
 
 df_tahun = df[df["TAHUN"] == tahun]
 
+SEMUA_DEPT = "— Semua Kementerian/Lembaga —"
+SEMUA_SATKER = "— Semua Satker —"
+
 dept_options = (
     df_tahun[["KDDEPT", "NMDEPT"]]
     .drop_duplicates()
     .sort_values("KDDEPT")
 )
 dept_options["LABEL"] = dept_options["KDDEPT"].astype(str) + " - " + dept_options["NMDEPT"]
-dept_label = st.sidebar.selectbox("Kementerian/Lembaga", dept_options["LABEL"])
-kddept = int(dept_label.split(" - ")[0])
+dept_label = st.sidebar.selectbox("Kementerian/Lembaga", [SEMUA_DEPT] + dept_options["LABEL"].tolist())
 
-df_dept = df_tahun[df_tahun["KDDEPT"] == kddept]
+if dept_label == SEMUA_DEPT:
+    kddept = None
+    nmdept = "Semua Kementerian/Lembaga"
+    df_dept = df_tahun
+else:
+    kddept = int(dept_label.split(" - ")[0])
+    nmdept = dept_options.loc[dept_options["KDDEPT"] == kddept, "NMDEPT"].iloc[0]
+    df_dept = df_tahun[df_tahun["KDDEPT"] == kddept]
 
 satker_options = (
     df_dept[["KDSATKER", "NMSATKER"]]
@@ -103,13 +112,16 @@ satker_options = (
     .sort_values("KDSATKER")
 )
 satker_options["LABEL"] = satker_options["KDSATKER"].astype(str) + " - " + satker_options["NMSATKER"]
-satker_label = st.sidebar.selectbox("Satuan Kerja (Satker)", satker_options["LABEL"])
-kdsatker = int(satker_label.split(" - ")[0])
+satker_label = st.sidebar.selectbox("Satuan Kerja (Satker)", [SEMUA_SATKER] + satker_options["LABEL"].tolist())
 
-df_satker = df_dept[df_dept["KDSATKER"] == kdsatker]
-
-nmdept = dept_options.loc[dept_options["KDDEPT"] == kddept, "NMDEPT"].iloc[0]
-nmsatker = satker_options.loc[satker_options["KDSATKER"] == kdsatker, "NMSATKER"].iloc[0]
+if satker_label == SEMUA_SATKER:
+    kdsatker = None
+    nmsatker = "Semua Satker"
+    df_satker = df_dept
+else:
+    kdsatker = int(satker_label.split(" - ")[0])
+    nmsatker = satker_options.loc[satker_options["KDSATKER"] == kdsatker, "NMSATKER"].iloc[0]
+    df_satker = df_dept[df_dept["KDSATKER"] == kdsatker]
 
 
 # --------------------------------------------------------------------------
@@ -257,10 +269,12 @@ def ringkasan_data_untuk_ai() -> str:
         f"- {row.LABEL_JENIS_BELANJA}: Rp {row.REALISASI:,.0f}"
         for row in top3_jenis.itertuples()
     )
+    kddept_ket = f" (kode {kddept})" if kddept is not None else ""
+    kdsatker_ket = f" (kode {kdsatker})" if kdsatker is not None else ""
     return f"""
 Data satker:
-- Kementerian/Lembaga: {nmdept} (kode {kddept})
-- Satker: {nmsatker} (kode {kdsatker})
+- Kementerian/Lembaga: {nmdept}{kddept_ket}
+- Satker: {nmsatker}{kdsatker_ket}
 - Tahun: {tahun}
 - Pagu: Rp {pagu_total:,.0f}
 - Realisasi sampai bulan {BULAN_LABEL.get(bulan_terakhir, '-')}: Rp {realisasi_total:,.0f} ({persen_serapan:.1f}% dari pagu)
