@@ -1,5 +1,5 @@
 """
-Dashboard Anggaran dan Transfer riaU terKini (DATUK) Reborn
+Dashboard Pagu & Realisasi Satker
 ----------------------------------
 Streamlit + Groq (narasi & chat AI). Supabase opsional untuk sumber data terpusat
 (lihat README.md, bagian "Pakai Supabase sebagai sumber data").
@@ -669,15 +669,28 @@ st.divider()
 # Chat box bebas
 # --------------------------------------------------------------------------
 
-st.subheader("💬 Tanya AI tentang Data Ini")
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# Batas jumlah pesan (user+assistant) dari histori lama yang ikut dikirim ke Groq.
+# Tanpa batas ini, chat_history terus menumpuk selama sesi berjalan (termasuk saat
+# kamu gonta-ganti dropdown tahun lalu tanya lagi), sehingga payload yang dikirim ke
+# Groq makin lama makin besar dan berisiko kena batas ukuran/context length API.
+MAKS_HISTORI_DIKIRIM = 6
+
+col_chat_title, col_chat_reset = st.columns([5, 1])
+with col_chat_title:
+    st.subheader("💬 Tanya AI tentang Data Ini")
+with col_chat_reset:
+    if st.button("🗑️ Reset Chat"):
+        st.session_state.chat_history = []
+        st.rerun()
+
 st.caption(
     "Bisa tanya soal satker yang sedang dipilih, atau tema/lokasi lain -- misalnya "
     "\"berapa pagu ketahanan pangan di Riau?\" atau \"anggaran penanganan karhutla ada di "
     "satker apa saja?\". AI otomatis mencari di seluruh data kalau perlu."
 )
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
 
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
@@ -707,42 +720,56 @@ if prompt:
                     "yang tersedia, jangan mengarang jawaban.\n\n" + ringkasan_data_untuk_ai()
                 ),
             }
-            messages = [system_msg] + st.session_state.chat_history
+            # Hanya kirim N pesan histori terakhir (bukan semuanya) supaya payload
+            # tetap terkendali walau sesi chat sudah panjang.
+            histori_dikirim = st.session_state.chat_history[-MAKS_HISTORI_DIKIRIM:]
+            messages = [system_msg] + histori_dikirim
 
-            resp = client.chat.completions.create(
-                model=GROQ_MODEL, messages=messages, tools=TOOLS_GROQ, tool_choice="auto",
-            )
-            msg = resp.choices[0].message
+            jawaban = None
+            try:
+                resp = client.chat.completions.create(
+                    model=GROQ_MODEL, messages=messages, tools=TOOLS_GROQ, tool_choice="auto",
+                )
+                msg = resp.choices[0].message
 
-            if msg.tool_calls:
-                import json as _json
-                messages.append({
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": "function",
-                            "function": {"name": tc.function.name, "arguments": tc.function.arguments},
-                        }
-                        for tc in msg.tool_calls
-                    ],
-                })
-                for tc in msg.tool_calls:
-                    try:
-                        args = _json.loads(tc.function.arguments)
-                    except Exception:
-                        args = {}
-                    hasil_tool = jalankan_tool_call(tc.function.name, args)
+                if msg.tool_calls:
+                    import json as _json
                     messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": hasil_tool,
+                        "role": "assistant",
+                        "content": msg.content or "",
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                            }
+                            for tc in msg.tool_calls
+                        ],
                     })
-                resp2 = client.chat.completions.create(model=GROQ_MODEL, messages=messages)
-                jawaban = resp2.choices[0].message.content
-            else:
-                jawaban = msg.content
+                    for tc in msg.tool_calls:
+                        try:
+                            args = _json.loads(tc.function.arguments)
+                        except Exception:
+                            args = {}
+                        hasil_tool = jalankan_tool_call(tc.function.name, args)
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": hasil_tool,
+                        })
+                    resp2 = client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+                    jawaban = resp2.choices[0].message.content
+                else:
+                    jawaban = msg.content
+            except Exception as e:
+                # Streamlit Cloud meredaksi pesan error asli di layar utama, jadi kita
+                # tangkap & tampilkan sendiri di sini supaya penyebab sebenarnya (mis.
+                # context length terlampaui, rate limit, atau error lain dari Groq) kelihatan.
+                detail = getattr(e, "message", None) or str(e)
+                body = getattr(e, "body", None)
+                jawaban = f"⚠️ Gagal memanggil Groq API: {detail}"
+                with st.expander("Detail error (untuk debugging)"):
+                    st.code(f"{type(e).__name__}: {detail}\n\nBody: {body}")
 
     st.session_state.chat_history.append({"role": "assistant", "content": jawaban})
     with st.chat_message("assistant"):
