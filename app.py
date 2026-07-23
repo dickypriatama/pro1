@@ -1,5 +1,5 @@
 """
-Dashboard Pagu & Realisasi Satker
+Dashboard Anggaran dan Transfer riaU terKini (DATUK) Reborn
 ----------------------------------
 Streamlit + Groq (narasi & chat AI). Supabase opsional untuk sumber data terpusat
 (lihat README.md, bagian "Pakai Supabase sebagai sumber data").
