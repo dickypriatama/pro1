@@ -164,9 +164,22 @@ persen_serapan = (realisasi_total / pagu_total * 100) if pagu_total else 0
 monthly = df_satker[BULAN_KOLOM].sum()
 kumulatif = monthly.cumsum()
 
-# bulan terakhir yang punya realisasi (>0)
+# bulan terakhir yang punya realisasi (>0) -- termasuk bulan berjalan yang baru terisi sebagian
 bulan_terisi = [i + 1 for i, v in enumerate(monthly.values) if v != 0]
 bulan_terakhir = max(bulan_terisi) if bulan_terisi else 0
+
+# Bulan terakhir yang datanya sudah PENUH (bulan kalender itu sudah benar-benar berakhir).
+# Beda dengan bulan_terakhir di atas: kalau tahun yang dipilih = tahun berjalan, bulan yang
+# sedang berjalan (mis. hari ini masih di tengah bulan itu) TIDAK dihitung "penuh" walaupun
+# sudah ada sebagian realisasi tercatat -- dipakai grafik tren & tabel per-bulan supaya bulan
+# yang belum berakhir ditampilkan sebagai proyeksi, bukan aktual.
+hari_ini = date.today()
+if tahun < hari_ini.year:
+    bulan_penuh_terakhir = bulan_terakhir
+elif tahun > hari_ini.year:
+    bulan_penuh_terakhir = 0
+else:
+    bulan_penuh_terakhir = min(bulan_terakhir, hari_ini.month - 1)
 
 jenis_belanja = (
     df_satker.groupby("LABEL_JENIS_BELANJA")["REALISASI"]
@@ -352,63 +365,84 @@ st.subheader("Tren & Proyeksi Realisasi hingga Akhir Tahun")
 
 bulan_angka = list(range(1, 13))
 
-# Grafik non-kumulatif: nilai realisasi per bulan (biar kelihatan naik-turunnya),
-# bulan setelah bulan_terakhir ditampilkan sebagai proyeksi rata-rata (garis putus-putus)
-aktual = [monthly.values[b - 1] if b <= bulan_terakhir else None for b in bulan_angka]
+# Grafik non-kumulatif: nilai realisasi per bulan (biar kelihatan naik-turunnya). Bulan yang
+# belum benar-benar berakhir (lihat bulan_penuh_terakhir) ditampilkan sebagai proyeksi (garis
+# putus-putus) memakai nilai proyeksi akhir bulan, BUKAN realisasi parsial yang sudah tercatat
+# sejauh ini -- walaupun datanya sudah tidak nol.
+def _nilai_proyeksi_bulan(b):
+    if proyeksi_agregat_bulanan is not None:
+        return proyeksi_agregat_bulanan[b - 1]
+    return rerata_bulanan
+
+
+aktual = [monthly.values[b - 1] if b <= bulan_penuh_terakhir else None for b in bulan_angka]
 proyeksi = []
 for b in bulan_angka:
-    if bulan_terakhir == 0:
+    if bulan_penuh_terakhir == 0:
+        # Belum ada satu bulan pun yang penuh datanya tahun ini -> seluruh garis adalah proyeksi
+        proyeksi.append(_nilai_proyeksi_bulan(b))
+    elif b < bulan_penuh_terakhir:
         proyeksi.append(None)
-    elif b < bulan_terakhir:
-        proyeksi.append(None)
-    elif b == bulan_terakhir:
+    elif b == bulan_penuh_terakhir:
         proyeksi.append(monthly.values[b - 1])  # titik sambung dengan garis aktual
     else:
-        if proyeksi_agregat_bulanan is not None:
-            proyeksi.append(proyeksi_agregat_bulanan[b - 1])
-        else:
-            proyeksi.append(rerata_bulanan)
+        proyeksi.append(_nilai_proyeksi_bulan(b))
 
 fig_trend = go.Figure()
 fig_trend.add_trace(go.Scatter(
     x=BULAN_KOLOM, y=aktual, mode="lines+markers",
-    name="Realisasi per Bulan (Aktual)", line=dict(width=3),
+    name="Realisasi per Bulan (Aktual)",
+    line=dict(width=3, shape="spline", smoothing=1.1),
 ))
 fig_trend.add_trace(go.Scatter(
     x=BULAN_KOLOM, y=proyeksi, mode="lines+markers",
-    name="Proyeksi (rata-rata bulanan)", line=dict(dash="dash"),
+    name="Proyeksi (rata-rata bulanan)",
+    line=dict(dash="dash", shape="spline", smoothing=1.1),
 ))
 fig_trend.update_layout(yaxis_title="Rupiah (per bulan)", xaxis_title=None)
 st.plotly_chart(fig_trend, use_container_width=True)
 
+_catatan_bulan_berjalan = ""
+if bulan_terakhir > bulan_penuh_terakhir:
+    _catatan_bulan_berjalan = (
+        f" Bulan {BULAN_LABEL.get(bulan_terakhir, '-')} sendiri masih berjalan (belum berakhir), "
+        "jadi titik & garisnya di grafik ini memakai proyeksi akhir bulan, bukan realisasi yang "
+        "baru tercatat sebagian sejauh ini."
+    )
+_label_batas = BULAN_LABEL.get(bulan_penuh_terakhir, "-") if bulan_penuh_terakhir else None
+
 if metode_proyeksi == "historis":
     daftar_tahun_ket = ", ".join(str(t) for t in tahun_dipakai)
+    _batas_teks = f"Bulan setelah {_label_batas}" if _label_batas else "Seluruh bulan tahun ini"
     st.caption(
         "Grafik ini menampilkan realisasi tiap bulan (bukan kumulatif) supaya terlihat bulan mana "
-        "yang realisasinya naik/turun. Bulan setelah "
-        f"{BULAN_LABEL.get(bulan_terakhir, '-')} adalah proyeksi yang dihitung dari rerata tertimbang "
-        "tingkat realisasi tahun-tahun sebelumnya (bobot 50%-25%-12,5%-6,25%-6,25% untuk tahun "
-        f"y-1 s.d. y-5) dikalikan pagu tahun {tahun}. Tahun historis yang tersedia & dipakai: "
-        f"{daftar_tahun_ket}."
+        f"yang realisasinya naik/turun. {_batas_teks} adalah proyeksi yang dihitung dari rerata "
+        "tertimbang tingkat realisasi tahun-tahun sebelumnya (bobot 50%-25%-12,5%-6,25%-6,25% "
+        f"untuk tahun y-1 s.d. y-5) dikalikan pagu tahun {tahun}. Tahun historis yang tersedia & "
+        f"dipakai: {daftar_tahun_ket}.{_catatan_bulan_berjalan}"
     )
 else:
+    _batas_teks = f"Bulan setelah {_label_batas}" if _label_batas else "Seluruh bulan tahun ini"
     st.caption(
         "Grafik ini menampilkan realisasi tiap bulan (bukan kumulatif) supaya terlihat bulan mana "
-        "yang realisasinya naik/turun. Bulan setelah "
-        f"{BULAN_LABEL.get(bulan_terakhir, '-')} adalah proyeksi. Belum ada data historis (tahun "
-        f"sebelum {tahun}) untuk entitas ini, sehingga proyeksi memakai metode cadangan: rata-rata "
-        "realisasi per bulan pada tahun berjalan dikalikan 12 bulan."
+        f"yang realisasinya naik/turun. {_batas_teks} adalah proyeksi. Belum ada data historis "
+        f"(tahun sebelum {tahun}) untuk entitas ini, sehingga proyeksi memakai metode cadangan: "
+        f"rata-rata realisasi per bulan pada tahun berjalan dikalikan 12 bulan.{_catatan_bulan_berjalan}"
     )
 
 # --------------------------------------------------------------------------
-# Tabel realisasi per bulan per jenis belanja (aktual vs proyeksi)
+# Tabel realisasi per bulan per jenis belanja (aktual vs proyeksi), ditranspose:
+# kolom = jenis belanja, baris = bulan (+ baris ringkasan total di bawah).
 # --------------------------------------------------------------------------
 
 st.markdown("**Pagu & Realisasi per Bulan per Jenis Belanja**")
 
-TOTAL_COL = "TOTAL (Realisasi+Proyeksi)"
+BARIS_TOTAL_REALISASI_RP = "Total Realisasi (Rp)"
+BARIS_TOTAL_REALISASI_PCT = "Total Realisasi (%)"
+BARIS_TOTAL_PROYEKSI_RP = "Total Realisasi + Proyeksi Akhir Tahun (Rp)"
+BARIS_TOTAL_PROYEKSI_PCT = "Total Realisasi + Proyeksi Akhir Tahun (%)"
 
-# Urutan baris tabel mengikuti kode jenis belanja (51 Pegawai, 52 Barang, 53 Modal, dst),
+# Urutan kolom tabel mengikuti kode jenis belanja (51 Pegawai, 52 Barang, 53 Modal, dst),
 # bukan diurutkan berdasarkan besar realisasi seperti pie chart.
 urutan_kode = (
     df_satker[["JENIS BELANJA", "LABEL_JENIS_BELANJA"]]
@@ -422,57 +456,108 @@ pagu_per_jenis = (
     .reindex(urutan_kode)
 )
 
-tabel = df_satker.groupby("LABEL_JENIS_BELANJA")[BULAN_KOLOM].sum().astype(float)
-tabel = tabel.reindex(urutan_kode)  # urutkan sesuai kode jenis belanja
+# Data realisasi AKTUAL murni (sebelum bulan yang belum penuh ditimpa angka proyeksi) --
+# dipakai untuk baris "Total Realisasi" (Rp & %), yang HANYA menghitung uang yang sudah
+# benar-benar terealisasi (tidak termasuk proyeksi bulan yang belum berakhir).
+realisasi_aktual_jenis = (
+    df_satker.groupby("LABEL_JENIS_BELANJA")[BULAN_KOLOM].sum()
+    .astype(float)
+    .reindex(urutan_kode)
+)
 
 proyeksi_per_jenis, _ = hitung_proyeksi_per_jenis(tahun, pagu_per_jenis.reindex(urutan_kode))
 
-mask_proyeksi = pd.DataFrame(False, index=tabel.index, columns=BULAN_KOLOM)
-if bulan_terakhir < 12:
-    for jb in tabel.index:
+# Data tampilan per bulan: realisasi aktual utk bulan yang sudah penuh, proyeksi utk bulan
+# yang belum berakhir/belum terjadi (memakai bulan_penuh_terakhir, sama seperti grafik tren).
+tabel_tampil = realisasi_aktual_jenis.copy()
+if bulan_penuh_terakhir < 12:
+    for jb in tabel_tampil.index:
         proyeksi_jb = proyeksi_per_jenis.get(jb)
         if proyeksi_jb is None:
             # tidak ada histori utk jenis belanja ini -> fallback rata-rata realisasi tahun berjalan
-            actual_sum = tabel.loc[jb, BULAN_KOLOM[:bulan_terakhir]].sum() if bulan_terakhir else 0
-            rerata_jb = actual_sum / bulan_terakhir if bulan_terakhir else 0
-            for m in range(bulan_terakhir, 12):
-                tabel.loc[jb, BULAN_KOLOM[m]] = rerata_jb
+            actual_sum = (
+                tabel_tampil.loc[jb, BULAN_KOLOM[:bulan_penuh_terakhir]].sum()
+                if bulan_penuh_terakhir else 0
+            )
+            rerata_jb = actual_sum / bulan_penuh_terakhir if bulan_penuh_terakhir else 0
+            for m in range(bulan_penuh_terakhir, 12):
+                tabel_tampil.loc[jb, BULAN_KOLOM[m]] = rerata_jb
         else:
-            for m in range(bulan_terakhir, 12):
-                tabel.loc[jb, BULAN_KOLOM[m]] = proyeksi_jb[m]
-    mask_proyeksi.loc[:, BULAN_KOLOM[bulan_terakhir:]] = True
+            for m in range(bulan_penuh_terakhir, 12):
+                tabel_tampil.loc[jb, BULAN_KOLOM[m]] = proyeksi_jb[m]
 
-tabel.loc["Total"] = tabel.sum()
-mask_proyeksi.loc["Total"] = mask_proyeksi.iloc[0] if len(mask_proyeksi) else False
+# --- Transpose: baris = bulan, kolom = jenis belanja, + kolom TOTAL di kanan ---
+tabel_t = tabel_tampil.reindex(urutan_kode).T
+tabel_t["TOTAL"] = tabel_t.sum(axis=1)
 
-# Kolom PAGU (disisipkan sebelum kolom bulanan) dan kolom TOTAL (realisasi+proyeksi) di akhir
-tabel.insert(0, "PAGU", pd.concat([pagu_per_jenis, pd.Series({"Total": pagu_total})]))
-tabel[TOTAL_COL] = tabel[BULAN_KOLOM].sum(axis=1)
+pagu_row = pagu_per_jenis.reindex(urutan_kode).copy()
+pagu_row["TOTAL"] = pagu_total
+pagu_row.name = "PAGU"
 
-# Mask lengkap (PAGU & TOTAL_COL tidak pernah ditandai sebagai proyeksi)
-mask_lengkap = pd.DataFrame(False, index=tabel.index, columns=tabel.columns)
-mask_lengkap[BULAN_KOLOM] = mask_proyeksi[BULAN_KOLOM]
+pagu_aman = pagu_per_jenis.reindex(urutan_kode).replace(0, np.nan)  # hindari bagi nol
+
+total_real_rp = realisasi_aktual_jenis.sum(axis=1)
+total_real_rp["TOTAL"] = total_real_rp.sum()
+total_real_rp.name = BARIS_TOTAL_REALISASI_RP
+
+total_real_pct = (realisasi_aktual_jenis.sum(axis=1) / pagu_aman * 100).fillna(0)
+total_real_pct["TOTAL"] = (total_real_rp["TOTAL"] / pagu_total * 100) if pagu_total else 0
+total_real_pct.name = BARIS_TOTAL_REALISASI_PCT
+
+total_proyeksi_rp = tabel_tampil.reindex(urutan_kode).sum(axis=1)
+total_proyeksi_rp["TOTAL"] = total_proyeksi_rp.sum()
+total_proyeksi_rp.name = BARIS_TOTAL_PROYEKSI_RP
+
+total_proyeksi_pct = (tabel_tampil.reindex(urutan_kode).sum(axis=1) / pagu_aman * 100).fillna(0)
+total_proyeksi_pct["TOTAL"] = (total_proyeksi_rp["TOTAL"] / pagu_total * 100) if pagu_total else 0
+total_proyeksi_pct.name = BARIS_TOTAL_PROYEKSI_PCT
+
+tabel_final = pd.concat([
+    pagu_row.to_frame().T,
+    tabel_t,
+    total_real_rp.to_frame().T,
+    total_real_pct.to_frame().T,
+    total_proyeksi_rp.to_frame().T,
+    total_proyeksi_pct.to_frame().T,
+])
+tabel_final = tabel_final.reindex(columns=urutan_kode + ["TOTAL"])
+
+BARIS_RUPIAH = ["PAGU"] + BULAN_KOLOM + [BARIS_TOTAL_REALISASI_RP, BARIS_TOTAL_PROYEKSI_RP]
+BARIS_PERSEN = [BARIS_TOTAL_REALISASI_PCT, BARIS_TOTAL_PROYEKSI_PCT]
+
+# Baris bulan yang proyeksi (belum berakhir) ditandai kuning; begitu juga baris ringkasan
+# "Total Realisasi + Proyeksi" karena mengandung angka proyeksi (kalau memang ada proyeksinya).
+baris_bulan_proyeksi = [b for i, b in enumerate(BULAN_KOLOM) if i >= bulan_penuh_terakhir]
+mask_final = pd.DataFrame(False, index=tabel_final.index, columns=tabel_final.columns)
+mask_final.loc[baris_bulan_proyeksi, :] = True
+if bulan_penuh_terakhir < 12:
+    mask_final.loc[BARIS_TOTAL_PROYEKSI_RP, :] = True
+    mask_final.loc[BARIS_TOTAL_PROYEKSI_PCT, :] = True
 
 
 def _highlight_proyeksi(_):
     return pd.DataFrame(
-        np.where(mask_lengkap, "background-color: #fff3cd; color: #7a5b00;", ""),
-        index=mask_lengkap.index, columns=mask_lengkap.columns,
+        np.where(mask_final, "background-color: #fff3cd; color: #7a5b00;", ""),
+        index=mask_final.index, columns=mask_final.columns,
     )
 
 
 styled_tabel = (
-    tabel.style
+    tabel_final.style
     .apply(_highlight_proyeksi, axis=None)
-    .format("Rp {:,.0f}")
+    .format("Rp {:,.0f}", subset=pd.IndexSlice[BARIS_RUPIAH, :])
+    .format("{:.1f}%", subset=pd.IndexSlice[BARIS_PERSEN, :])
 )
 st.dataframe(styled_tabel, use_container_width=True)
 st.caption(
-    "🟨 Sel berwarna kuning = angka proyeksi (belum realisasi aktual), dihitung dari rerata "
-    "tertimbang tingkat realisasi jenis belanja ini pada tahun-tahun sebelumnya (lihat penjelasan "
-    "di atas grafik tren) dikalikan pagu jenis belanja tahun berjalan. Jika suatu jenis belanja "
-    "belum punya histori, dipakai rata-rata realisasi tahun berjalan sebagai cadangan. Kolom PAGU "
-    f"dan kolom \"{TOTAL_COL}\" tidak ditandai kuning karena berupa gabungan/acuan, bukan proyeksi murni."
+    "🟨 Sel berwarna kuning = mengandung angka proyeksi (bulan yang belum berakhir), dihitung "
+    "dari rerata tertimbang tingkat realisasi jenis belanja ini pada tahun-tahun sebelumnya "
+    "(lihat penjelasan di atas grafik tren) dikalikan pagu jenis belanja tahun berjalan. Jika "
+    "suatu jenis belanja belum punya histori, dipakai rata-rata realisasi tahun berjalan sebagai "
+    "cadangan. Baris \"Total Realisasi\" hanya menjumlahkan uang yang sudah benar-benar "
+    "terealisasi (bulan penuh saja), sedangkan baris \"Total Realisasi + Proyeksi Akhir Tahun\" "
+    "menjumlahkan realisasi ditambah estimasi bulan-bulan yang belum berakhir/belum terjadi. "
+    "Kolom PAGU & baris PAGU tidak ditandai kuning karena berupa acuan, bukan proyeksi."
 )
 
 st.divider()
