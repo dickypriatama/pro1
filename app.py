@@ -50,7 +50,7 @@ st.divider()
 # ==========================================
 # Membaca data CSV (pastikan file pagu_realisasi.csv ada di folder yang sama)
 try:
-    df_utama = pd.read_csv("pagu_realisasi.csv")
+    df_utama = pd.read_csv("pagu_realisasi.csv.gz")
 except FileNotFoundError:
     st.error("File 'pagu_realisasi.csv' tidak ditemukan. Pastikan file berada di folder yang sama dengan app.py.")
     st.stop()
