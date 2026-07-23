@@ -70,16 +70,37 @@ def load_data() -> pd.DataFrame:
             st.secrets["SUPABASE_KEY"],
             st.secrets.get("SUPABASE_TABLE", "pagu_realisasi"),
         )
-    return load_data_from_csv("data/pagu_realisasi.csv")
+    return load_data_from_csv("data/pagu_realisasi.csv.gz")
 
 
-df = load_data()
+KOLOM_TEKS_CARI = [
+    "NMDEPT", "NMSATKER", "PROVINSI", "KABKOTA", "FUNGSI", "SUBFUNGSI",
+    "PROGRAM", "KEGIATAN", "OUTPUT", "AKUN",
+]
 
-# Kolom REALISASI & SISA PAGU dihitung ulang dari total kolom bulanan (JAN..DES).
-# Ini supaya semua angka di dashboard konsisten dengan rincian bulanannya -- pada sebagian
-# data sumber, kolom REALISASI bawaan bisa tidak sinkron dengan rincian JAN..DES-nya.
-df["REALISASI"] = df[BULAN_KOLOM].sum(axis=1)
-df["SISA PAGU"] = df["PAGU"] - df["REALISASI"]
+
+@st.cache_data(show_spinner="Menyiapkan data...")
+def siapkan_data(df_mentah: pd.DataFrame) -> pd.DataFrame:
+    d = df_mentah.copy()
+    # REALISASI & SISA PAGU dihitung ulang dari total kolom bulanan (JAN..DES).
+    # Ini supaya semua angka di dashboard konsisten dengan rincian bulanannya -- pada
+    # sebagian data sumber, kolom REALISASI bawaan bisa tidak sinkron dengan JAN..DES-nya.
+    d["REALISASI"] = d[BULAN_KOLOM].sum(axis=1)
+    d["SISA PAGU"] = d["PAGU"] - d["REALISASI"]
+
+    # Kolom teks gabungan (lowercase) untuk pencarian tematik AI (mis. "ketahanan pangan",
+    # "kebakaran hutan") -- dipakai fitur pencarian di chat box.
+    kolom_ada = [c for c in KOLOM_TEKS_CARI if c in d.columns]
+    if kolom_ada:
+        d["_TEKS_CARI"] = (
+            d[kolom_ada].fillna("").astype(str).agg(" ".join, axis=1).str.lower()
+        )
+    else:
+        d["_TEKS_CARI"] = ""
+    return d
+
+
+df = siapkan_data(load_data())
 
 
 # --------------------------------------------------------------------------
@@ -469,6 +490,116 @@ def get_groq_client():
     return Groq(api_key=api_key)
 
 
+# --------------------------------------------------------------------------
+# Pencarian tematik lintas satker/kementerian/provinsi -- dipakai AI di chat box
+# untuk menjawab pertanyaan seperti "berapa pagu ketahanan pangan di Riau?" atau
+# "penanganan karhutla ada di satker mana saja?".
+# --------------------------------------------------------------------------
+
+def cari_anggaran(kata_kunci: list, provinsi: str = None, tahun_cari: int = None) -> dict:
+    d = df
+    d = d[d["TAHUN"] == (tahun_cari or tahun)]
+
+    if provinsi:
+        if "PROVINSI" in d.columns:
+            d = d[d["PROVINSI"].str.contains(provinsi, case=False, na=False)]
+        else:
+            return {"error": "Kolom provinsi tidak tersedia di data ini."}
+
+    if kata_kunci:
+        mask = pd.Series(False, index=d.index)
+        for kw in kata_kunci:
+            mask = mask | d["_TEKS_CARI"].str.contains(str(kw).lower(), na=False)
+        d = d[mask]
+
+    if d.empty:
+        return {
+            "ditemukan": False,
+            "pesan": (
+                "Tidak ada baris data yang cocok dengan kata kunci/filter ini. Kemungkinan "
+                "temanya tidak tercatat secara eksplisit di nama program/kegiatan/output pada "
+                "level detail yang tersedia di data ini."
+            ),
+        }
+
+    rincian = (
+        d.groupby(["KDDEPT", "NMDEPT", "KDSATKER", "NMSATKER"])
+        .agg(PAGU=("PAGU", "sum"), REALISASI=("REALISASI", "sum"))
+        .reset_index()
+        .sort_values("PAGU", ascending=False)
+        .head(30)
+    )
+
+    return {
+        "ditemukan": True,
+        "tahun": int(tahun_cari or tahun),
+        "jumlah_baris_cocok": int(len(d)),
+        "jumlah_satker_ditemukan": int(rincian.shape[0]),
+        "total_pagu": float(d["PAGU"].sum()),
+        "total_realisasi": float(d["REALISASI"].sum()),
+        "rincian_per_satker_top30": rincian.to_dict(orient="records"),
+        "catatan": (
+            "rincian_per_satker_top30 diurutkan dari pagu terbesar, dibatasi 30 baris teratas. "
+            "total_pagu & total_realisasi sudah menjumlahkan SEMUA satker yang cocok, tidak "
+            "hanya yang ditampilkan di rincian."
+        ),
+    }
+
+
+TOOLS_GROQ = [
+    {
+        "type": "function",
+        "function": {
+            "name": "cari_anggaran",
+            "description": (
+                "Mencari & menjumlahkan pagu/realisasi anggaran di SELURUH data (semua "
+                "kementerian & satker, bukan cuma yang sedang dipilih di dashboard), "
+                "berdasarkan kata kunci tema/program/kegiatan/output, dan opsional filter "
+                "provinsi atau tahun. WAJIB dipakai untuk pertanyaan yang menyebutkan tema "
+                "(mis. 'ketahanan pangan', 'kebakaran hutan'), lokasi/provinsi tertentu, atau "
+                "kementerian/satker yang BUKAN yang sedang aktif di dashboard."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "kata_kunci": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Daftar kata kunci (boleh lebih dari satu sinonim) untuk dicari di "
+                            "nama kementerian/satker/provinsi/fungsi/program/kegiatan/output/akun. "
+                            "Contoh: ['ketahanan pangan'] atau ['kebakaran hutan', 'karhutla']."
+                        ),
+                    },
+                    "provinsi": {
+                        "type": "string",
+                        "description": "Nama provinsi untuk filter lokasi. Kosongkan jika tidak spesifik ke satu provinsi.",
+                    },
+                    "tahun_cari": {
+                        "type": "integer",
+                        "description": "Tahun anggaran yang dicari. Kosongkan untuk memakai tahun yang sedang dipilih di dashboard.",
+                    },
+                },
+                "required": ["kata_kunci"],
+            },
+        },
+    }
+]
+
+
+def jalankan_tool_call(nama_fungsi: str, args: dict) -> str:
+    import json
+    if nama_fungsi == "cari_anggaran":
+        hasil = cari_anggaran(
+            kata_kunci=args.get("kata_kunci", []),
+            provinsi=args.get("provinsi"),
+            tahun_cari=args.get("tahun_cari"),
+        )
+    else:
+        hasil = {"error": f"Fungsi tidak dikenal: {nama_fungsi}"}
+    return json.dumps(hasil, ensure_ascii=False)
+
+
 def ringkasan_data_untuk_ai() -> str:
     top3_jenis = jenis_belanja.head(3)
     baris_jenis = "\n".join(
@@ -539,6 +670,11 @@ st.divider()
 # --------------------------------------------------------------------------
 
 st.subheader("💬 Tanya AI tentang Data Ini")
+st.caption(
+    "Bisa tanya soal satker yang sedang dipilih, atau tema/lokasi lain -- misalnya "
+    "\"berapa pagu ketahanan pangan di Riau?\" atau \"anggaran penanganan karhutla ada di "
+    "satker apa saja?\". AI otomatis mencari di seluruh data kalau perlu."
+)
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -547,7 +683,7 @@ for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.write(msg["content"])
 
-prompt = st.chat_input("Tulis pertanyaan tentang pagu/realisasi satker ini...")
+prompt = st.chat_input("Tulis pertanyaan tentang pagu/realisasi satker ini, atau tanya tema/provinsi lain...")
 
 if prompt:
     st.session_state.chat_history.append({"role": "user", "content": prompt})
@@ -558,19 +694,55 @@ if prompt:
         jawaban = "Fitur chat AI belum aktif karena GROQ_API_KEY belum di-set. Lihat README.md."
     else:
         with st.spinner("AI sedang menjawab..."):
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "Kamu adalah asisten analisis anggaran pemerintah Indonesia. Jawab pertanyaan "
-                        "pengguna berdasarkan data satker berikut. Jika pertanyaan di luar cakupan data, "
-                        "katakan dengan jujur bahwa datanya tidak tersedia.\n\n" + ringkasan_data_untuk_ai()
-                    ),
-                }
-            ] + st.session_state.chat_history
+            system_msg = {
+                "role": "system",
+                "content": (
+                    "Kamu adalah asisten analisis anggaran pemerintah Indonesia. Untuk pertanyaan "
+                    "tentang satker/kementerian yang SEDANG dipilih di dashboard, jawab langsung "
+                    "memakai data di bawah ini. Untuk pertanyaan tentang TEMA (mis. 'ketahanan "
+                    "pangan', 'kebakaran hutan'), PROVINSI tertentu, atau kementerian/satker LAIN "
+                    "di luar yang sedang aktif, WAJIB panggil fungsi cari_anggaran untuk mencari di "
+                    "seluruh data -- jangan mengarang angka. Kalau hasil pencarian menyatakan tidak "
+                    "ditemukan, katakan dengan jujur bahwa datanya tidak ditemukan pada level detail "
+                    "yang tersedia, jangan mengarang jawaban.\n\n" + ringkasan_data_untuk_ai()
+                ),
+            }
+            messages = [system_msg] + st.session_state.chat_history
 
-            resp = client.chat.completions.create(model=GROQ_MODEL, messages=messages)
-            jawaban = resp.choices[0].message.content
+            resp = client.chat.completions.create(
+                model=GROQ_MODEL, messages=messages, tools=TOOLS_GROQ, tool_choice="auto",
+            )
+            msg = resp.choices[0].message
+
+            if msg.tool_calls:
+                import json as _json
+                messages.append({
+                    "role": "assistant",
+                    "content": msg.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {"name": tc.function.name, "arguments": tc.function.arguments},
+                        }
+                        for tc in msg.tool_calls
+                    ],
+                })
+                for tc in msg.tool_calls:
+                    try:
+                        args = _json.loads(tc.function.arguments)
+                    except Exception:
+                        args = {}
+                    hasil_tool = jalankan_tool_call(tc.function.name, args)
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tc.id,
+                        "content": hasil_tool,
+                    })
+                resp2 = client.chat.completions.create(model=GROQ_MODEL, messages=messages)
+                jawaban = resp2.choices[0].message.content
+            else:
+                jawaban = msg.content
 
     st.session_state.chat_history.append({"role": "assistant", "content": jawaban})
     with st.chat_message("assistant"):

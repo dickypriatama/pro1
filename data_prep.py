@@ -41,7 +41,7 @@ LABEL_JENIS_BELANJA = {
 }
 
 
-def main(src_path: str, out_path: str = "data/pagu_realisasi.csv"):
+def main(src_path: str, out_path: str = "data/pagu_realisasi.csv.gz"):
     df = pd.read_excel(src_path)
     df = df[[c for c in KOLOM_DIPAKAI if c in df.columns]].copy()
 
@@ -53,7 +53,7 @@ def main(src_path: str, out_path: str = "data/pagu_realisasi.csv"):
         "Lainnya (" + df["JENIS BELANJA"].astype(str) + ")"
     )
 
-    df.to_csv(out_path, index=False)
+    df.to_csv(out_path, index=False, compression="gzip" if out_path.endswith(".gz") else None)
     print(f"Selesai. {len(df):,} baris disimpan ke {out_path}")
 
 

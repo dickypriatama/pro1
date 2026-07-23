@@ -9,8 +9,8 @@ narasi otomatis dan chat box berbasis AI (Groq).
 ```
 pagu-app/
 ├── app.py                      # Aplikasi Streamlit utama
-├── data_prep.py                # Ubah file xlsx sumber -> data/pagu_realisasi.csv
-├── data/pagu_realisasi.csv     # Data yang dipakai app (sudah dibuat dari file kamu)
+├── data_prep.py                # Ubah file xlsx sumber -> data/pagu_realisasi.csv.gz
+├── data/pagu_realisasi.csv.gz  # Data yang dipakai app (sudah dibuat dari file kamu)
 ├── requirements.txt
 ├── supabase_schema.sql         # (opsional) skema tabel jika mau pakai Supabase
 ├── supabase_upload.py          # (opsional) unggah CSV ke Supabase
@@ -24,7 +24,7 @@ pagu-app/
 - **Groq** — model AI di balik "Narasi Otomatis" dan kotak chat bebas. Cepat dan gratis
   untuk pemakaian ringan.
 - **GitHub** — menyimpan kode ini, sekaligus jadi sumber deploy otomatis ke Streamlit Cloud.
-- **Supabase** — *opsional*. Secara default data dibaca langsung dari `data/pagu_realisasi.csv`
+- **Supabase** — *opsional*. Secara default data dibaca langsung dari `data/pagu_realisasi.csv.gz`
   yang dibundel di repo (paling simpel, cukup untuk kebanyakan kasus). Pakai Supabase kalau kamu
   mau: (a) data terpusat yang bisa diperbarui tanpa redeploy kode, atau (b) beberapa
   aplikasi/tim mengakses data yang sama.
@@ -101,13 +101,51 @@ setiap kali update data:
 
 Setelah itu, `app.py` otomatis membaca data dari Supabase, bukan dari CSV lokal.
 
+## Fitur pencarian tematik di chat AI
+
+Chat box sekarang bisa menjawab pertanyaan yang **tidak terbatas pada satker yang sedang
+dipilih di dropdown**, misalnya:
+- "Berapa pagu dan realisasi anggaran ketahanan pangan di Riau?"
+- "Pagu anggaran penanganan kebakaran hutan ada di satker apa saja dan berapa nilainya?"
+
+AI akan otomatis mencari di seluruh data (nama kementerian/satker/provinsi/fungsi/
+program/kegiatan/output/akun) ketika pertanyaan menyebutkan tema atau lokasi tertentu.
+Kalau temanya tidak tercatat secara eksplisit pada level detail yang tersedia di data
+(mis. sub-kegiatan yang sangat spesifik), AI akan bilang jujur "tidak ditemukan" alih-alih
+mengarang jawaban.
+
+**Catatan:** akurasi pencarian tematik bergantung pada seberapa eksplisit nama program/
+kegiatan/output mengandung kata kunci tersebut. Data ini hanya sampai level "Output"
+(bukan Rincian Output/RO yang lebih detail), jadi kegiatan yang sangat spesifik kadang
+tidak ketemu meskipun anggarannya ada.
+
+## Ukuran file data
+
+Data mentah (dengan kolom deskriptif untuk pencarian tematik) cukup besar dalam bentuk CSV
+biasa (~52 MB), jadi disimpan dalam bentuk **terkompresi gzip**: `data/pagu_realisasi.csv.gz`
+(~4,7 MB). Ini otomatis dibaca oleh `app.py` (pandas mengenali `.gz` secara otomatis) --
+tidak perlu di-extract dulu. Ukuran ini jauh di bawah batas upload file GitHub (25 MB lewat
+web/drag-drop, 100 MB lewat command line), jadi aman untuk di-upload lewat cara apa pun.
+
 ## Memperbarui data
 
-Kalau ada file pagu-realisasi baru (misalnya update bulanan):
+Data saat ini mencakup tahun 2021-2026, digabungkan dari file mentah `pagu_real21-26.csv`
+(format: pemisah titik-koma, angka gaya Indonesia, encoding latin-1) memakai skrip
+`build_from_combined_csv.py`. Kalau nanti ada file gabungan baru dengan format yang sama:
+
+```bash
+# taruh file baru di lokasi yang sama lalu jalankan:
+python build_from_combined_csv.py
+git add data/pagu_realisasi.csv.gz
+git commit -m "Update data pagu realisasi"
+git push
+```
+
+Kalau ada file pagu-realisasi baru dalam format xlsx seperti awal (satu tahun per file):
 
 ```bash
 python data_prep.py path/ke/file_baru.xlsx
-git add data/pagu_realisasi.csv
+git add data/pagu_realisasi.csv.gz
 git commit -m "Update data bulan X"
 git push
 ```
