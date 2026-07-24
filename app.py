@@ -51,6 +51,17 @@ LABEL_JENIS_BELANJA_SINGKAT = {
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
+def fmt_satker(kode) -> str:
+    """Format kode satker jadi 6 digit dengan angka 0 di depan kalau kurang dari 6 digit
+    (kode satker resminya selalu 6 digit, mis. 613739, tapi 12345 -> '012345')."""
+    if kode is None:
+        return ""
+    try:
+        return f"{int(kode):06d}"
+    except (TypeError, ValueError):
+        return str(kode)
+
+
 # --------------------------------------------------------------------------
 # Load data
 # --------------------------------------------------------------------------
@@ -193,7 +204,7 @@ if st.session_state.auth is None:
         "Anda hanya bisa melihat data satker Anda sendiri."
     )
     with st.form("form_login"):
-        username_input = st.text_input("Username (kode satker)")
+        username_input = st.text_input("Username (kode satker, 6 digit)", placeholder="mis. 012345")
         password_input = st.text_input("Password", type="password")
         submit_login = st.form_submit_button("Login")
     if submit_login:
@@ -212,7 +223,7 @@ with st.sidebar:
     if is_super:
         st.success(f"👤 Super User ({SUPERUSER_USERNAME})")
     else:
-        st.success(f"👤 Satker: {auth['kdsatker']}")
+        st.success(f"👤 Satker: {fmt_satker(auth['kdsatker'])}")
     if st.button("🚪 Logout"):
         st.session_state.auth = None
         st.rerun()
@@ -259,7 +270,7 @@ if is_super:
         .drop_duplicates()
         .sort_values("KDSATKER")
     )
-    satker_options["LABEL"] = satker_options["KDSATKER"].astype(str) + " - " + satker_options["NMSATKER"]
+    satker_options["LABEL"] = satker_options["KDSATKER"].apply(fmt_satker) + " - " + satker_options["NMSATKER"]
     satker_label = st.sidebar.selectbox("Satuan Kerja (Satker)", [SEMUA_SATKER] + satker_options["LABEL"].tolist())
 
     if satker_label == SEMUA_SATKER:
@@ -277,7 +288,7 @@ else:
 
     tahun_list = sorted(df_kdsatker_semua_tahun["TAHUN"].unique(), reverse=True)
     if not tahun_list:
-        st.error(f"Tidak ada data untuk satker dengan kode {kdsatker}.")
+        st.error(f"Tidak ada data untuk satker dengan kode {fmt_satker(kdsatker)}.")
         st.stop()
     tahun = st.sidebar.selectbox("Tahun", tahun_list)
 
@@ -295,7 +306,7 @@ else:
         nmdept = df_satker["NMDEPT"].iloc[0]
         df_dept = df_tahun[df_tahun["KDDEPT"] == kddept]
 
-    st.sidebar.caption(f"Satker: **{kdsatker} - {nmsatker}**")
+    st.sidebar.caption(f"Satker: **{fmt_satker(kdsatker)} - {nmsatker}**")
     st.sidebar.caption(f"Kementerian/Lembaga: {nmdept}")
 
 
@@ -634,6 +645,25 @@ if bulan_penuh_terakhir < 12:
             for m in range(bulan_penuh_terakhir, 12):
                 tabel_tampil.loc[jb, BULAN_KOLOM[m]] = proyeksi_jb[m]
 
+# Batasi proyeksi: selain Belanja Pegawai, total (realisasi aktual + proyeksi) per jenis
+# belanja tidak boleh melebihi 100% dari pagu jenis belanja itu sendiri -- kalau proyeksi
+# mentahnya lebih besar dari sisa pagu, bulan-bulan proyeksi diskalakan turun proporsional
+# (bentuk/pola bulanannya tetap sama, cuma totalnya dipangkas pas di 100%).
+if bulan_penuh_terakhir < 12:
+    for jb in tabel_tampil.index:
+        if jb == "Belanja Pegawai":
+            continue
+        pagu_jb = pagu_per_jenis.get(jb, 0)
+        if not pagu_jb or pagu_jb <= 0:
+            continue
+        actual_sum = tabel_tampil.loc[jb, BULAN_KOLOM[:bulan_penuh_terakhir]].sum()
+        proyeksi_depan = tabel_tampil.loc[jb, BULAN_KOLOM[bulan_penuh_terakhir:]]
+        total_proyeksi_depan = proyeksi_depan.sum()
+        sisa_pagu_jb = max(pagu_jb - actual_sum, 0)
+        if total_proyeksi_depan > sisa_pagu_jb:
+            faktor_skala = (sisa_pagu_jb / total_proyeksi_depan) if total_proyeksi_depan > 0 else 0
+            tabel_tampil.loc[jb, BULAN_KOLOM[bulan_penuh_terakhir:]] = proyeksi_depan * faktor_skala
+
 # --- Transpose: baris = bulan, kolom = jenis belanja, + kolom TOTAL di kanan ---
 tabel_t = tabel_tampil.reindex(urutan_kode).T
 tabel_t["TOTAL"] = tabel_t.sum(axis=1)
@@ -769,6 +799,7 @@ def cari_anggaran(kata_kunci: list, provinsi: str = None, tahun_cari: int = None
         .sort_values("PAGU", ascending=False)
         .head(30)
     )
+    rincian["KDSATKER"] = rincian["KDSATKER"].apply(fmt_satker)
 
     return {
         "ditemukan": True,
@@ -857,7 +888,7 @@ def ringkasan_data_untuk_ai() -> str:
         for row in top3_jenis.itertuples()
     )
     kddept_ket = f" (kode {kddept})" if kddept is not None else ""
-    kdsatker_ket = f" (kode {kdsatker})" if kdsatker is not None else ""
+    kdsatker_ket = f" (kode {fmt_satker(kdsatker)})" if kdsatker is not None else ""
     return f"""
 Data satker:
 - Kementerian/Lembaga: {nmdept}{kddept_ket}
