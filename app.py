@@ -13,6 +13,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from groq import Groq
 
 # --------------------------------------------------------------------------
@@ -49,6 +50,169 @@ LABEL_JENIS_BELANJA_SINGKAT = {
 }
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+
+
+# --------------------------------------------------------------------------
+# Banner intro: animasi pesilat (hitam-putih) + tulisan berjalan (marquee)
+# --------------------------------------------------------------------------
+# Animasi pesilat cuma diputar SEKALI di awal sesi (biar tidak mengulang tiap kali
+# ganti filter/dropdown yang men-trigger rerun Streamlit) -- lihat pemanggilannya di
+# bagian "Header & KPI". Setelah animasi pertama itu, tampilan berikutnya cuma
+# menampilkan pita tulisan berjalan saja (tanpa pesilat), lebih hemat & tidak
+# mengganggu.
+
+_BANNER_TEMPLATE = """
+<div class="datuk-banner" style="height:__TINGGI__px;">
+  <div class="pesilat-stage" style="display:__PESILAT_DISPLAY__;">
+    <svg id="pesilat-svg" viewBox="0 0 200 220" xmlns="http://www.w3.org/2000/svg">
+      <g id="tubuh">
+        <!-- Tanjak (penutup kepala khas Melayu/Riau) -->
+        <path d="M78,26 Q100,2 122,26 Q112,16 100,14 Q88,16 78,26 Z" fill="#f2f2f2"/>
+        <path d="M84,23 Q100,10 116,23 Q108,16 100,15 Q92,16 84,23 Z" fill="#cfcfcf"/>
+        <!-- Kepala -->
+        <circle cx="100" cy="34" r="13" fill="#f2f2f2"/>
+        <!-- Badan -->
+        <path d="M86,46 Q100,42 114,46 L118,100 Q100,108 82,100 Z" fill="#f2f2f2"/>
+        <!-- Lengan kiri -->
+        <g id="lengan-kiri" style="transform-origin:88px 52px;">
+          <rect x="62" y="47" width="26" height="11" rx="5.5" fill="#f2f2f2"/>
+        </g>
+        <!-- Lengan kanan -->
+        <g id="lengan-kanan" style="transform-origin:112px 52px;">
+          <rect x="112" y="47" width="26" height="11" rx="5.5" fill="#f2f2f2"/>
+        </g>
+        <!-- Kaki kiri -->
+        <g id="kaki-kiri" style="transform-origin:92px 100px;">
+          <rect x="84" y="100" width="14" height="48" rx="7" fill="#f2f2f2"/>
+        </g>
+        <!-- Kaki kanan -->
+        <g id="kaki-kanan" style="transform-origin:108px 100px;">
+          <rect x="102" y="100" width="14" height="48" rx="7" fill="#f2f2f2"/>
+        </g>
+        <!-- Kain sisir (ikat pinggang khas) -->
+        <rect x="84" y="92" width="32" height="8" fill="#8a8a8a"/>
+      </g>
+    </svg>
+  </div>
+
+  <div class="marquee-wrap">
+    <div class="marquee-text">
+      Selamat datang di <strong>DATUK</strong>&nbsp;(Dashboard Anggaran dan Transfer Riau terKini) reborn.
+      &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;
+      Selamat datang di <strong>DATUK</strong>&nbsp;(Dashboard Anggaran dan Transfer Riau terKini) reborn.
+    </div>
+  </div>
+</div>
+
+<style>
+  .datuk-banner {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+    background: radial-gradient(ellipse at 50% 30%, #262626 0%, #050505 75%);
+    border-radius: 10px;
+    box-sizing: border-box;
+  }
+
+  .pesilat-stage { position: absolute; inset: 0; overflow: hidden; }
+
+  #pesilat-svg {
+    position: absolute;
+    top: 6px;
+    width: 130px;
+    height: 143px;
+    filter: drop-shadow(0 0 8px rgba(255,255,255,0.28));
+    animation: posisi-pesilat 4.8s cubic-bezier(.34,.2,.2,1) 1 both;
+  }
+
+  @keyframes posisi-pesilat {
+    0%    { left: 108%; transform: translateY(0)    rotate(0deg); }
+    12%   { left: 62%;  transform: translateY(-34px) rotate(0deg); }
+    18%   { left: 62%;  transform: translateY(0)     rotate(0deg); }
+    54%   { left: 62%;  transform: translateY(0)     rotate(0deg); }
+    62%   { left: 50%;  transform: translateY(-22px) rotate(160deg); }
+    82%   { left: 34%;  transform: translateY(0)     rotate(360deg); }
+    100%  { left: 34%;  transform: translateY(0)     rotate(360deg); }
+  }
+
+  #lengan-kanan { animation: gerak-lengan-kanan 4.8s ease-in-out 1 both; }
+  @keyframes gerak-lengan-kanan {
+    0%, 20%   { transform: rotate(0deg); }
+    27%       { transform: rotate(-75deg); }
+    33%       { transform: rotate(-15deg); }
+    39%       { transform: rotate(-60deg); }
+    46%       { transform: rotate(0deg); }
+    54%, 100% { transform: rotate(0deg); }
+  }
+
+  #lengan-kiri { animation: gerak-lengan-kiri 4.8s ease-in-out 1 both; }
+  @keyframes gerak-lengan-kiri {
+    0%, 20%   { transform: rotate(0deg); }
+    27%       { transform: rotate(25deg); }
+    33%       { transform: rotate(55deg); }
+    39%       { transform: rotate(15deg); }
+    46%       { transform: rotate(35deg); }
+    54%, 100% { transform: rotate(0deg); }
+  }
+
+  #kaki-kanan { animation: gerak-kaki-kanan 4.8s ease-in-out 1 both; }
+  @keyframes gerak-kaki-kanan {
+    0%, 30%   { transform: rotate(0deg); }
+    37%       { transform: rotate(-60deg); }
+    43%       { transform: rotate(-10deg); }
+    50%       { transform: rotate(0deg); }
+    54%, 100% { transform: rotate(0deg); }
+  }
+
+  #kaki-kiri { animation: gerak-kaki-kiri 4.8s ease-in-out 1 both; }
+  @keyframes gerak-kaki-kiri { 0%, 100% { transform: rotate(0deg); } }
+
+  .marquee-wrap {
+    position: absolute;
+    left: 0; right: 0; bottom: 0;
+    height: 42px;
+    display: flex;
+    align-items: center;
+    background: linear-gradient(90deg, #000 0%, #1c1c1c 50%, #000 100%);
+    border-top: 1px solid #3a3a3a;
+    opacity: 0;
+    animation: tampil-marquee 0.01s __DELAY__ forwards;
+  }
+
+  @keyframes tampil-marquee { to { opacity: 1; } }
+
+  .marquee-text {
+    display: inline-block;
+    white-space: nowrap;
+    color: #f5f5f5;
+    font-weight: 700;
+    font-size: 0.95rem;
+    letter-spacing: 0.4px;
+    padding-left: 100%;
+    animation: gerak-marquee 16s linear infinite __DELAY__;
+  }
+
+  .marquee-text strong { color: #ffffff; }
+
+  @keyframes gerak-marquee {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-100%); }
+  }
+</style>
+"""
+
+
+def render_intro_banner(tampilkan_pesilat: bool):
+    """Render banner intro (pesilat + marquee) sekali, atau marquee saja utk rerun berikutnya."""
+    tinggi = 232 if tampilkan_pesilat else 56
+    delay = "4.6s" if tampilkan_pesilat else "0.1s"
+    html = (
+        _BANNER_TEMPLATE
+        .replace("__TINGGI__", str(tinggi))
+        .replace("__PESILAT_DISPLAY__", "block" if tampilkan_pesilat else "none")
+        .replace("__DELAY__", delay)
+    )
+    components.html(html, height=tinggi + 4)
 
 
 # --------------------------------------------------------------------------
@@ -418,22 +582,32 @@ persen_proyeksi = (proyeksi_akhir_tahun / pagu_total * 100) if pagu_total else 0
 # Header & KPI
 # --------------------------------------------------------------------------
 
+if "intro_pesilat_shown" not in st.session_state:
+    st.session_state.intro_pesilat_shown = False
+
+render_intro_banner(tampilkan_pesilat=not st.session_state.intro_pesilat_shown)
+st.session_state.intro_pesilat_shown = True
+
 st.title("📊 Dashboard Pagu & Realisasi Satker")
 st.caption(f"🕒 Data terakhir diperbarui: {tanggal_update_data()}")
 st.caption(f"{nmdept} — {nmsatker} — Tahun {tahun}")
 
 
 def kpi_card(label: str, value: str, delta: str = None):
+    # Tinggi kartu dibuat TETAP (bukan min-height) + flexbox supaya keempat kartu KPI
+    # selalu sama persis ukurannya, baik yang punya baris delta (%) maupun yang tidak
+    # (kartu tanpa delta tetap menyisakan baris kosong di posisi yang sama).
     delta_html = (
-        f'<div style="font-size:0.85rem;color:#16a34a;margin-top:4px;">{delta}</div>'
-        if delta else ""
+        f'<div style="font-size:0.85rem;color:#16a34a;">{delta}</div>'
+        if delta else '<div style="font-size:0.85rem;">&nbsp;</div>'
     )
     st.markdown(
         f"""
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;
-                    padding:16px 18px;min-height:110px;">
-            <div style="font-size:0.85rem;color:#64748b;margin-bottom:6px;">{label}</div>
-            <div style="font-size:clamp(1rem, 2.1vw, 1.6rem);font-weight:700;color:#0f172a;
+                    padding:16px 18px;height:132px;box-sizing:border-box;overflow:hidden;
+                    display:flex;flex-direction:column;justify-content:space-between;">
+            <div style="font-size:0.85rem;color:#64748b;">{label}</div>
+            <div style="font-size:clamp(0.95rem, 2vw, 1.5rem);font-weight:700;color:#0f172a;
                         white-space:normal;overflow-wrap:break-word;line-height:1.25;">{value}</div>
             {delta_html}
         </div>
