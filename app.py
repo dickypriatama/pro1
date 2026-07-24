@@ -92,6 +92,38 @@ def load_data() -> pd.DataFrame:
     return load_data_from_csv("data/pagu_realisasi.csv.gz")
 
 
+@st.cache_data(show_spinner=False)
+def tanggal_update_data(path_csv: str = "data/pagu_realisasi.csv.gz") -> str:
+    """Tanggal 'data terakhir diperbarui', diambil dari tanggal commit git terakhir yang
+    mengubah file data ini di GitHub (jadi otomatis sesuai kapan file di-push, bukan perlu
+    diisi manual). Kalau bukan repo git (mis. dijalankan lokal tanpa git, atau folder .git
+    tidak ikut ter-deploy), fallback ke waktu modifikasi file di disk."""
+    import subprocess
+    from datetime import datetime as _dt
+
+    nama_bulan = ["Januari", "Februari", "Maret", "April", "Mei", "Juni",
+                  "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+
+    def _format(dt):
+        return f"{dt.day} {nama_bulan[dt.month - 1]} {dt.year}, {dt.strftime('%H:%M')}"
+
+    try:
+        hasil = subprocess.run(
+            ["git", "log", "-1", "--format=%cI", "--", path_csv],
+            capture_output=True, text=True, timeout=5,
+        )
+        tanggal_str = hasil.stdout.strip()
+        if tanggal_str:
+            return _format(_dt.fromisoformat(tanggal_str))
+    except Exception:
+        pass
+
+    try:
+        return _format(_dt.fromtimestamp(os.path.getmtime(path_csv))) + " (perkiraan)"
+    except Exception:
+        return "tidak diketahui"
+
+
 KOLOM_TEKS_CARI = [
     "NMDEPT", "NMSATKER", "PROVINSI", "KABKOTA", "FUNGSI", "SUBFUNGSI",
     "PROGRAM", "KEGIATAN", "OUTPUT", "AKUN",
@@ -387,6 +419,7 @@ persen_proyeksi = (proyeksi_akhir_tahun / pagu_total * 100) if pagu_total else 0
 # --------------------------------------------------------------------------
 
 st.title("📊 Dashboard Pagu & Realisasi Satker")
+st.caption(f"🕒 Data terakhir diperbarui: {tanggal_update_data()}")
 st.caption(f"{nmdept} — {nmsatker} — Tahun {tahun}")
 
 
