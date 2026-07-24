@@ -29,6 +29,25 @@ BULAN_KOLOM = ["JAN", "FEB", "MAR", "APR", "MEI", "JUN",
                "JUL", "AGS", "SEP", "OKT", "NOV", "DES"]
 BULAN_LABEL = {i + 1: b for i, b in enumerate(BULAN_KOLOM)}
 
+# Label jenis belanja versi singkat -- menggantikan label panjang bawaan data sumber, dipakai
+# konsisten di seluruh dashboard (tabel per jenis belanja, pie chart komposisi, dst).
+LABEL_JENIS_BELANJA_SINGKAT = {
+    51: "Belanja Pegawai",
+    52: "Belanja Barang",
+    53: "Belanja Modal",
+    54: "Belanja Bunga Utang",
+    55: "Belanja Subsidi",
+    56: "Belanja Hibah",
+    57: "Belanja Bansos",
+    58: "Belanja Lain-lain",
+    61: "TKD DBH",
+    62: "TKD DAU",
+    63: "TKD DAK Fisik",
+    64: "TKD Insentif Fiskal",
+    65: "TKD DAK Nonfisik",
+    66: "TKD Dana Desa",
+}
+
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
 
 
@@ -88,6 +107,12 @@ def siapkan_data(df_mentah: pd.DataFrame) -> pd.DataFrame:
     d["REALISASI"] = d[BULAN_KOLOM].sum(axis=1)
     d["SISA PAGU"] = d["PAGU"] - d["REALISASI"]
 
+    # Ganti label jenis belanja dengan versi singkat (lihat LABEL_JENIS_BELANJA_SINGKAT).
+    # Kode yang tidak ada di mapping (mis. "Lainnya (XX)") tetap pakai label asli dari data sumber.
+    d["LABEL_JENIS_BELANJA"] = (
+        d["JENIS BELANJA"].map(LABEL_JENIS_BELANJA_SINGKAT).fillna(d["LABEL_JENIS_BELANJA"])
+    )
+
     # Kolom teks gabungan (lowercase) untuk pencarian tematik AI (mis. "ketahanan pangan",
     # "kebakaran hutan") -- dipakai fitur pencarian di chat box.
     kolom_ada = [c for c in KOLOM_TEKS_CARI if c in d.columns]
@@ -104,52 +129,142 @@ df = siapkan_data(load_data())
 
 
 # --------------------------------------------------------------------------
+# Login
+# --------------------------------------------------------------------------
+# Username & password = kode satker masing-masing (contoh: satker kode 123456 login
+# dengan username "123456" & password "123456"). Ada satu super user (kanwil04/admin)
+# yang bisa melihat seluruh data semua satker.
+
+SUPERUSER_USERNAME = "kanwil04"
+SUPERUSER_PASSWORD = "admin"
+
+
+def _cek_login(username: str, password: str, df_all: pd.DataFrame):
+    username = (username or "").strip()
+    password = (password or "").strip()
+    if username == SUPERUSER_USERNAME and password == SUPERUSER_PASSWORD:
+        return {"role": "super", "kdsatker": None}
+    if username and username == password and username.isdigit():
+        kdsatker = int(username)
+        if kdsatker in df_all["KDSATKER"].unique():
+            return {"role": "satker", "kdsatker": kdsatker}
+    return None
+
+
+if "auth" not in st.session_state:
+    st.session_state.auth = None
+
+if st.session_state.auth is None:
+    st.title("🔐 Login Dashboard Pagu & Realisasi Satker")
+    st.caption(
+        "Login memakai kode satker Anda sebagai username maupun password. Setelah login, "
+        "Anda hanya bisa melihat data satker Anda sendiri."
+    )
+    with st.form("form_login"):
+        username_input = st.text_input("Username (kode satker)")
+        password_input = st.text_input("Password", type="password")
+        submit_login = st.form_submit_button("Login")
+    if submit_login:
+        hasil_login = _cek_login(username_input, password_input, df)
+        if hasil_login:
+            st.session_state.auth = hasil_login
+            st.rerun()
+        else:
+            st.error("Username atau password salah, atau kode satker tidak ditemukan di data.")
+    st.stop()
+
+auth = st.session_state.auth
+is_super = auth["role"] == "super"
+
+with st.sidebar:
+    if is_super:
+        st.success(f"👤 Super User ({SUPERUSER_USERNAME})")
+    else:
+        st.success(f"👤 Satker: {auth['kdsatker']}")
+    if st.button("🚪 Logout"):
+        st.session_state.auth = None
+        st.rerun()
+
+# Dipakai fungsi cari_anggaran (chat AI) supaya pencarian tematik lintas-satker tetap dibatasi
+# hanya ke satker milik user yang login (None = super user, tidak dibatasi).
+SCOPE_KDSATKER = None if is_super else auth["kdsatker"]
+
+
+# --------------------------------------------------------------------------
 # Sidebar - filter
 # --------------------------------------------------------------------------
 
 st.sidebar.header("Filter")
 
-tahun_list = sorted(df["TAHUN"].unique(), reverse=True)
-tahun = st.sidebar.selectbox("Tahun", tahun_list)
+if is_super:
+    tahun_list = sorted(df["TAHUN"].unique(), reverse=True)
+    tahun = st.sidebar.selectbox("Tahun", tahun_list)
 
-df_tahun = df[df["TAHUN"] == tahun]
+    df_tahun = df[df["TAHUN"] == tahun]
 
-SEMUA_DEPT = "— Semua Kementerian/Lembaga —"
-SEMUA_SATKER = "— Semua Satker —"
+    SEMUA_DEPT = "— Semua Kementerian/Lembaga —"
+    SEMUA_SATKER = "— Semua Satker —"
 
-dept_options = (
-    df_tahun[["KDDEPT", "NMDEPT"]]
-    .drop_duplicates()
-    .sort_values("KDDEPT")
-)
-dept_options["LABEL"] = dept_options["KDDEPT"].astype(str) + " - " + dept_options["NMDEPT"]
-dept_label = st.sidebar.selectbox("Kementerian/Lembaga", [SEMUA_DEPT] + dept_options["LABEL"].tolist())
+    dept_options = (
+        df_tahun[["KDDEPT", "NMDEPT"]]
+        .drop_duplicates()
+        .sort_values("KDDEPT")
+    )
+    dept_options["LABEL"] = dept_options["KDDEPT"].astype(str) + " - " + dept_options["NMDEPT"]
+    dept_label = st.sidebar.selectbox("Kementerian/Lembaga", [SEMUA_DEPT] + dept_options["LABEL"].tolist())
 
-if dept_label == SEMUA_DEPT:
-    kddept = None
-    nmdept = "Semua Kementerian/Lembaga"
-    df_dept = df_tahun
+    if dept_label == SEMUA_DEPT:
+        kddept = None
+        nmdept = "Semua Kementerian/Lembaga"
+        df_dept = df_tahun
+    else:
+        kddept = int(dept_label.split(" - ")[0])
+        nmdept = dept_options.loc[dept_options["KDDEPT"] == kddept, "NMDEPT"].iloc[0]
+        df_dept = df_tahun[df_tahun["KDDEPT"] == kddept]
+
+    satker_options = (
+        df_dept[["KDSATKER", "NMSATKER"]]
+        .drop_duplicates()
+        .sort_values("KDSATKER")
+    )
+    satker_options["LABEL"] = satker_options["KDSATKER"].astype(str) + " - " + satker_options["NMSATKER"]
+    satker_label = st.sidebar.selectbox("Satuan Kerja (Satker)", [SEMUA_SATKER] + satker_options["LABEL"].tolist())
+
+    if satker_label == SEMUA_SATKER:
+        kdsatker = None
+        nmsatker = "Semua Satker"
+        df_satker = df_dept
+    else:
+        kdsatker = int(satker_label.split(" - ")[0])
+        nmsatker = satker_options.loc[satker_options["KDSATKER"] == kdsatker, "NMSATKER"].iloc[0]
+        df_satker = df_dept[df_dept["KDSATKER"] == kdsatker]
 else:
-    kddept = int(dept_label.split(" - ")[0])
-    nmdept = dept_options.loc[dept_options["KDDEPT"] == kddept, "NMDEPT"].iloc[0]
-    df_dept = df_tahun[df_tahun["KDDEPT"] == kddept]
+    # User satker: tidak ada pilihan kementerian/satker -- otomatis terkunci ke satker sendiri.
+    kdsatker = auth["kdsatker"]
+    df_kdsatker_semua_tahun = df[df["KDSATKER"] == kdsatker]
 
-satker_options = (
-    df_dept[["KDSATKER", "NMSATKER"]]
-    .drop_duplicates()
-    .sort_values("KDSATKER")
-)
-satker_options["LABEL"] = satker_options["KDSATKER"].astype(str) + " - " + satker_options["NMSATKER"]
-satker_label = st.sidebar.selectbox("Satuan Kerja (Satker)", [SEMUA_SATKER] + satker_options["LABEL"].tolist())
+    tahun_list = sorted(df_kdsatker_semua_tahun["TAHUN"].unique(), reverse=True)
+    if not tahun_list:
+        st.error(f"Tidak ada data untuk satker dengan kode {kdsatker}.")
+        st.stop()
+    tahun = st.sidebar.selectbox("Tahun", tahun_list)
 
-if satker_label == SEMUA_SATKER:
-    kdsatker = None
-    nmsatker = "Semua Satker"
-    df_satker = df_dept
-else:
-    kdsatker = int(satker_label.split(" - ")[0])
-    nmsatker = satker_options.loc[satker_options["KDSATKER"] == kdsatker, "NMSATKER"].iloc[0]
-    df_satker = df_dept[df_dept["KDSATKER"] == kdsatker]
+    df_tahun = df[df["TAHUN"] == tahun]
+    df_satker = df_tahun[df_tahun["KDSATKER"] == kdsatker]
+
+    if df_satker.empty:
+        st.warning(f"Satker Anda belum punya data di tahun {tahun}.")
+        nmsatker = "-"
+        kddept, nmdept = None, "-"
+        df_dept = df_tahun.iloc[0:0]
+    else:
+        nmsatker = df_satker["NMSATKER"].iloc[0]
+        kddept = int(df_satker["KDDEPT"].iloc[0])
+        nmdept = df_satker["NMDEPT"].iloc[0]
+        df_dept = df_tahun[df_tahun["KDDEPT"] == kddept]
+
+    st.sidebar.caption(f"Satker: **{kdsatker} - {nmsatker}**")
+    st.sidebar.caption(f"Kementerian/Lembaga: {nmdept}")
 
 
 # --------------------------------------------------------------------------
@@ -435,7 +550,7 @@ else:
 # kolom = jenis belanja, baris = bulan (+ baris ringkasan total di bawah).
 # --------------------------------------------------------------------------
 
-st.markdown("**Pagu & Realisasi per Bulan per Jenis Belanja**")
+st.markdown("**Realisasi Bulanan per Jenis Belanja**")
 
 BARIS_TOTAL_REALISASI_RP = "Total Realisasi (Rp)"
 BARIS_TOTAL_REALISASI_PCT = "Total Realisasi (%)"
@@ -535,16 +650,19 @@ if bulan_penuh_terakhir < 12:
     mask_final.loc[BARIS_TOTAL_PROYEKSI_PCT, :] = True
 
 
-def _highlight_proyeksi(_):
-    return pd.DataFrame(
+def _style_tabel(_):
+    styles = pd.DataFrame(
         np.where(mask_final, "background-color: #fff3cd; color: #7a5b00;", ""),
         index=mask_final.index, columns=mask_final.columns,
     )
+    # Baris PAGU dicetak tebal supaya jelas beda dari baris realisasi bulanan
+    styles.loc["PAGU", :] = styles.loc["PAGU", :] + "font-weight: bold;"
+    return styles
 
 
 styled_tabel = (
     tabel_final.style
-    .apply(_highlight_proyeksi, axis=None)
+    .apply(_style_tabel, axis=None)
     .format("Rp {:,.0f}", subset=pd.IndexSlice[BARIS_RUPIAH, :])
     .format("{:.1f}%", subset=pd.IndexSlice[BARIS_PERSEN, :])
 )
@@ -583,6 +701,10 @@ def get_groq_client():
 
 def cari_anggaran(kata_kunci: list, provinsi: str = None, tahun_cari: int = None) -> dict:
     d = df
+    if SCOPE_KDSATKER is not None:
+        # User satker biasa: pencarian dibatasi ke data satker miliknya sendiri saja,
+        # tidak boleh melihat/menghitung data satker lain.
+        d = d[d["KDSATKER"] == SCOPE_KDSATKER]
     d = d[d["TAHUN"] == (tahun_cari or tahun)]
 
     if provinsi:
@@ -627,6 +749,10 @@ def cari_anggaran(kata_kunci: list, provinsi: str = None, tahun_cari: int = None
             "rincian_per_satker_top30 diurutkan dari pagu terbesar, dibatasi 30 baris teratas. "
             "total_pagu & total_realisasi sudah menjumlahkan SEMUA satker yang cocok, tidak "
             "hanya yang ditampilkan di rincian."
+            + (
+                " Pencarian ini dibatasi hanya pada data satker Anda sendiri (bukan lintas satker)."
+                if SCOPE_KDSATKER is not None else ""
+            )
         ),
     }
 
@@ -637,9 +763,15 @@ TOOLS_GROQ = [
         "function": {
             "name": "cari_anggaran",
             "description": (
-                "Mencari & menjumlahkan pagu/realisasi anggaran di SELURUH data (semua "
-                "kementerian & satker, bukan cuma yang sedang dipilih di dashboard), "
-                "berdasarkan kata kunci tema/program/kegiatan/output, dan opsional filter "
+                (
+                    "Mencari & menjumlahkan pagu/realisasi anggaran di SELURUH data (semua "
+                    "kementerian & satker, bukan cuma yang sedang dipilih di dashboard), "
+                    if SCOPE_KDSATKER is None else
+                    "Mencari & menjumlahkan pagu/realisasi anggaran DI DALAM DATA SATKER INI SAJA "
+                    "(seluruh tahun & tema yang tersedia untuk satker ini, bukan cuma yang sedang "
+                    "dipilih di dashboard; TIDAK bisa mengakses data satker lain), "
+                )
+                + "berdasarkan kata kunci tema/program/kegiatan/output, dan opsional filter "
                 "provinsi atau tahun. WAJIB dipakai untuk pertanyaan yang menyebutkan tema "
                 "(mis. 'ketahanan pangan', 'kebakaran hutan'), lokasi/provinsi tertentu, atau "
                 "kementerian/satker yang BUKAN yang sedang aktif di dashboard."
