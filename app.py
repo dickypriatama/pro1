@@ -13,6 +13,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from groq import Groq
 
 # --------------------------------------------------------------------------
@@ -49,6 +50,72 @@ LABEL_JENIS_BELANJA_SINGKAT = {
 }
 
 GROQ_MODEL = os.environ.get("GROQ_MODEL", "openai/gpt-oss-120b")
+
+
+# --------------------------------------------------------------------------
+# Banner intro: tulisan berjalan (marquee)
+# --------------------------------------------------------------------------
+# Hanya SATU salinan kalimat di dalam marquee-text. Animasinya sudah otomatis membuat
+# kalimat masuk dari kanan, lewat penuh, lalu keluar layar sepenuhnya sebelum satu
+# putaran (loop) berikutnya mulai lagi -- jadi kemunculan kedua otomatis menunggu
+# kemunculan pertama selesai dulu, tidak tumpang tindih.
+
+_BANNER_TEMPLATE = """
+<div class="datuk-banner" style="height:56px;">
+  <div class="marquee-wrap">
+    <div class="marquee-text">
+      Selamat datang di <strong>DATUK</strong>&nbsp;(Dashboard Anggaran dan Transfer Riau terKini) reborn.
+    </div>
+  </div>
+</div>
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700&display=swap');
+
+  .datuk-banner {
+    position: relative;
+    width: 100%;
+    overflow: hidden;
+    background: radial-gradient(ellipse at 50% 30%, #262626 0%, #050505 75%);
+    border-radius: 10px;
+    box-sizing: border-box;
+  }
+
+  .marquee-wrap {
+    position: absolute;
+    left: 0; right: 0; top: 0; bottom: 0;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    background: linear-gradient(90deg, #000 0%, #1c1c1c 50%, #000 100%);
+    border-top: 1px solid #3a3a3a;
+  }
+
+  .marquee-text {
+    display: inline-block;
+    white-space: nowrap;
+    color: #f5f5f5;
+    font-family: 'Montserrat', sans-serif;
+    font-weight: 700;
+    font-size: 1rem;
+    letter-spacing: 0.4px;
+    padding-left: 100%;
+    animation: gerak-marquee 10s linear infinite;
+  }
+
+  .marquee-text strong { color: #ffffff; }
+
+  @keyframes gerak-marquee {
+    from { transform: translateX(0); }
+    to   { transform: translateX(-100%); }
+  }
+</style>
+"""
+
+
+def render_intro_banner():
+    """Render pita tulisan berjalan (marquee) di atas dashboard."""
+    components.html(_BANNER_TEMPLATE, height=60)
 
 
 # --------------------------------------------------------------------------
@@ -418,45 +485,46 @@ persen_proyeksi = (proyeksi_akhir_tahun / pagu_total * 100) if pagu_total else 0
 # Header & KPI
 # --------------------------------------------------------------------------
 
+render_intro_banner()
+
 st.title("📊 Dashboard Pagu & Realisasi Satker")
 st.caption(f"🕒 Data terakhir diperbarui: {tanggal_update_data()}")
 st.caption(f"{nmdept} — {nmsatker} — Tahun {tahun}")
 
 
-def kpi_card(label: str, value: str, delta: str = None):
+def kpi_card_html(label: str, value: str, delta: str = None) -> str:
+    # Tinggi kartu dibuat TETAP + flexbox supaya keempat kartu KPI selalu sama persis
+    # ukurannya, baik yang punya baris delta (%) maupun yang tidak (kartu tanpa delta
+    # tetap menyisakan baris kosong di posisi yang sama).
     delta_html = (
-        f'<div style="font-size:0.85rem;color:#16a34a;margin-top:4px;">{delta}</div>'
-        if delta else ""
+        f'<div style="font-size:0.85rem;color:#16a34a;">{delta}</div>'
+        if delta else '<div style="font-size:0.85rem;">&nbsp;</div>'
     )
-    st.markdown(
-        f"""
+    return f"""
         <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;
-                    padding:16px 18px;min-height:110px;">
-            <div style="font-size:0.85rem;color:#64748b;margin-bottom:6px;">{label}</div>
-            <div style="font-size:clamp(1rem, 2.1vw, 1.6rem);font-weight:700;color:#0f172a;
+                    padding:16px 18px;height:132px;box-sizing:border-box;overflow:hidden;
+                    display:flex;flex-direction:column;justify-content:space-between;">
+            <div style="font-size:0.85rem;color:#64748b;">{label}</div>
+            <div style="font-size:clamp(0.95rem, 2vw, 1.5rem);font-weight:700;color:#0f172a;
                         white-space:normal;overflow-wrap:break-word;line-height:1.25;">{value}</div>
             {delta_html}
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+        """
 
 
-r1c1, r1c2 = st.columns(2)
-r2c1, r2c2 = st.columns(2)
-
-with r1c1:
-    kpi_card("Pagu", f"Rp {pagu_total:,.0f}")
-with r1c2:
-    kpi_card("Realisasi", f"Rp {realisasi_total:,.0f}", f"{persen_serapan:.1f}% dari pagu")
-with r2c1:
-    kpi_card("Sisa Pagu", f"Rp {sisa_pagu:,.0f}")
-with r2c2:
-    kpi_card(
-        "Proyeksi Realisasi Akhir Tahun",
-        f"Rp {proyeksi_akhir_tahun:,.0f}",
-        f"{persen_proyeksi:.1f}% dari pagu",
-    )
+# Keempat kartu dirender dalam SATU grid CSS (bukan 2x st.columns() bertumpuk) supaya
+# jarak antar-baris (atas-bawah) persis sama dengan jarak antar-kolom (kiri-kanan) --
+# kalau pakai st.columns() terpisah per baris, Streamlit tidak otomatis memberi jarak
+# vertikal yang sama dengan jarak horizontalnya.
+kpi_html = f"""
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+    {kpi_card_html("Pagu", f"Rp {pagu_total:,.0f}")}
+    {kpi_card_html("Realisasi", f"Rp {realisasi_total:,.0f}", f"{persen_serapan:.1f}% dari pagu")}
+    {kpi_card_html("Sisa Pagu", f"Rp {sisa_pagu:,.0f}")}
+    {kpi_card_html("Proyeksi Realisasi Akhir Tahun", f"Rp {proyeksi_akhir_tahun:,.0f}", f"{persen_proyeksi:.1f}% dari pagu")}
+</div>
+"""
+st.markdown(kpi_html, unsafe_allow_html=True)
 
 st.divider()
 
